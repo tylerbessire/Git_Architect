@@ -1,0 +1,5 @@
+{
+  "name": "GitArchitect",
+  "description": "An intelligent GitHub code analyzer that generates step-by-step developer implementation plans based on your goals and repository context.",
+  "requestFramePermissions": []
+}
