@@ -1,13 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPlan, Step, ChatMessage } from "../types";
+import { config } from "../config";
 
-// Helper to ensure we don't have undefined API key
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    console.error("API_KEY is missing from environment variables");
+  if (!config.apiKey) {
+    throw new Error("API Key is not configured. Please check your environment variables.");
   }
-  return new GoogleGenAI({ apiKey: apiKey || 'dummy-key-for-dev' });
+  return new GoogleGenAI({ apiKey: config.apiKey });
 };
 
 export const generatePlan = async (
@@ -86,7 +85,7 @@ export const generatePlan = async (
 
   } catch (error) {
     console.error("Gemini Plan Generation Error:", error);
-    throw new Error("Failed to generate plan. Please try again.");
+    throw error;
   }
 };
 
