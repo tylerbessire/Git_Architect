@@ -22,11 +22,13 @@ export interface Step {
   filesUnknown: boolean; 
   affectedFiles: string[];
   complexity: 'Low' | 'Medium' | 'High';
+  safetyChecks: string[]; // New field for safety
 }
 
 export interface GeneratedPlan {
   title: string;
   summary: string;
+  researchNotes?: string; // New field for research context
   steps: Step[];
 }
 

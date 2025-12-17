@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Step, ChatMessage } from '../types';
-import { MessageSquare, ChevronDown, ChevronUp, Send, Code, FileCode } from 'lucide-react';
+import { MessageSquare, ChevronDown, ChevronUp, Send, Code, FileCode, ShieldAlert } from 'lucide-react';
 import { askStepQuestion } from '../services/gemini';
 
 interface StepCardProps {
@@ -79,6 +79,23 @@ const StepCard: React.FC<StepCardProps> = ({ step, repoName }) => {
         <div className="px-5 pb-5 border-t border-gray-800/50 bg-gray-950/30">
           <div className="pt-4 space-y-4">
             
+            {/* Safety Checks */}
+            {step.safetyChecks && step.safetyChecks.length > 0 && (
+                <div className="bg-amber-500/5 border border-amber-500/10 rounded-lg p-3">
+                    <h4 className="text-xs font-semibold text-amber-500 uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <ShieldAlert className="w-3 h-3" /> Safety Checklist
+                    </h4>
+                    <ul className="list-none space-y-1">
+                        {step.safetyChecks.map((check, idx) => (
+                            <li key={idx} className="flex items-start gap-2 text-xs text-amber-200/80">
+                                <span className="mt-1 w-1 h-1 rounded-full bg-amber-500 flex-shrink-0"></span>
+                                {check}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+
             {/* Rationale */}
             <div>
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Rationale</h4>

@@ -1,36 +1,49 @@
 import React, { useState, useEffect } from 'react';
-import { Github, Code2, Layers, Book } from 'lucide-react';
+import { Github, Code2, Layers, Book, LogOut, Loader2, Search } from 'lucide-react';
 import RepoSearch from './components/RepoSearch';
 import AnalysisInput from './components/AnalysisInput';
 import PlanDisplay from './components/PlanDisplay';
 import DocsModal from './components/DocsModal';
+import ApiKeySetup from './components/ApiKeySetup';
 import { Repo, GeneratedPlan } from './types';
 import { getRepoReadme, getRepoStructure } from './services/github';
-import { generatePlan } from './services/gemini';
-import { validateConfig } from './config';
+import { generatePlan, performDeepResearch } from './services/gemini';
+import { hasValidKey, clearApiKey, getApiKey } from './config';
 
 enum AppState {
+  SETUP_REQUIRED,
   SEARCH_REPO,
   INPUT_GOALS,
-  VIEW_PLAN,
-  CONFIG_ERROR
+  VIEW_PLAN
 }
 
 const App: React.FC = () => {
-  const [state, setState] = useState<AppState>(AppState.SEARCH_REPO);
+  const [state, setState] = useState<AppState>(AppState.SETUP_REQUIRED);
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
   const [plan, setPlan] = useState<GeneratedPlan | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string>('');
   const [showDocs, setShowDocs] = useState(false);
-  const [configErrors, setConfigErrors] = useState<string[]>([]);
 
+  // Check for API key on mount
   useEffect(() => {
-    const { valid, missing } = validateConfig();
-    if (!valid) {
-      setConfigErrors(missing);
-      setState(AppState.CONFIG_ERROR);
+    if (hasValidKey()) {
+      setState(AppState.SEARCH_REPO);
+    } else {
+      setState(AppState.SETUP_REQUIRED);
     }
   }, []);
+
+  const handleKeySetupComplete = () => {
+    setState(AppState.SEARCH_REPO);
+  };
+
+  const handleClearKey = () => {
+    if (window.confirm("Are you sure you want to remove your API Key?")) {
+      clearApiKey();
+      window.location.reload();
+    }
+  };
 
   const handleRepoSelect = (repo: Repo) => {
     setSelectedRepo(repo);
@@ -43,16 +56,23 @@ const App: React.FC = () => {
     
     try {
       // 1. Fetch context
+      setLoadingStage('Scanning Repository...');
       const [readme, structure] = await Promise.all([
         getRepoReadme(selectedRepo.full_name, selectedRepo.default_branch),
         getRepoStructure(selectedRepo.full_name)
       ]);
 
-      // 2. Generate Plan
+      // 2. Perform Deep Research
+      setLoadingStage('Performing Deep Research & Safety Analysis...');
+      const researchNotes = await performDeepResearch(selectedRepo.full_name, goal, problems);
+
+      // 3. Generate Plan
+      setLoadingStage('Architecting Solution...');
       const generatedPlan = await generatePlan(
         { name: selectedRepo.full_name, readme, structure },
         goal,
-        problems
+        problems,
+        researchNotes
       );
 
       setPlan(generatedPlan);
@@ -62,7 +82,12 @@ const App: React.FC = () => {
       alert(`Failed to generate plan: ${error.message}`);
     } finally {
       setIsAnalyzing(false);
+      setLoadingStage('');
     }
+  };
+
+  const handlePlanUpdate = (newPlan: GeneratedPlan) => {
+      setPlan(newPlan);
   };
 
   const handleReset = () => {
@@ -95,10 +120,24 @@ const App: React.FC = () => {
                   className="hover:text-emerald-400 transition-colors flex items-center gap-2"
                 >
                   <Book className="w-4 h-4" />
-                  Documentation
+                  <span className="hidden sm:inline">Documentation</span>
                 </button>
-                <div className="w-px h-4 bg-gray-700"></div>
-                <div className="flex items-center gap-2">
+                
+                {state !== AppState.SETUP_REQUIRED && (
+                  <>
+                    <div className="w-px h-4 bg-gray-700"></div>
+                    <button 
+                      onClick={handleClearKey}
+                      className="hover:text-red-400 transition-colors flex items-center gap-2"
+                      title="Clear API Key"
+                    >
+                      <LogOut className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+                
+                <div className="w-px h-4 bg-gray-700 hidden sm:block"></div>
+                <div className="hidden sm:flex items-center gap-2">
                     <Github className="w-4 h-4" />
                     <span>v1.0.0</span>
                 </div>
@@ -109,32 +148,8 @@ const App: React.FC = () => {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         
-        {state === AppState.CONFIG_ERROR && (
-          <div className="flex flex-col items-center justify-center pt-20 animate-fade-in">
-             <div className="bg-gray-900 border border-gray-800 p-8 rounded-2xl max-w-lg w-full text-center shadow-2xl">
-                <div className="bg-red-500/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-500/20">
-                    <Layers className="w-8 h-8 text-red-500" />
-                </div>
-                <h2 className="text-2xl font-bold text-white mb-2">Configuration Required</h2>
-                <p className="text-gray-400 mb-6">
-                    The application is missing required environment variables.
-                </p>
-                <div className="bg-gray-950 p-4 rounded-lg border border-gray-800 text-left mb-6">
-                    <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Missing Variables</p>
-                    <ul className="space-y-1">
-                        {configErrors.map(err => (
-                            <li key={err} className="text-red-400 font-mono text-sm flex items-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-                                {err}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-                <p className="text-xs text-gray-500">
-                    Please set these variables in your environment or <code>.env</code> file and reload.
-                </p>
-             </div>
-          </div>
+        {state === AppState.SETUP_REQUIRED && (
+          <ApiKeySetup onComplete={handleKeySetupComplete} />
         )}
 
         {state === AppState.SEARCH_REPO && (
@@ -156,25 +171,34 @@ const App: React.FC = () => {
             {/* Feature Grid */}
             <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto pt-16 text-left">
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
-                    <Layers className="w-8 h-8 text-indigo-400 mb-4" />
-                    <h3 className="font-bold text-white mb-2">Context Aware</h3>
-                    <p className="text-sm text-gray-400">Reads file structures and documentation to understand your specific tech stack.</p>
+                    <Search className="w-8 h-8 text-indigo-400 mb-4" />
+                    <h3 className="font-bold text-white mb-2">Deep Research</h3>
+                    <p className="text-sm text-gray-400">Gemini 3.0 Pro scours the web for the latest best practices and safety warnings for your specific stack.</p>
                 </div>
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
                     <Code2 className="w-8 h-8 text-emerald-400 mb-4" />
-                    <h3 className="font-bold text-white mb-2">Actionable Steps</h3>
-                    <p className="text-sm text-gray-400">Generates precise TODO.md files with file paths and complexity estimates.</p>
+                    <h3 className="font-bold text-white mb-2">Safety First</h3>
+                    <p className="text-sm text-gray-400">Every plan prioritizes backward compatibility and includes rollback strategies.</p>
                 </div>
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
-                    <Github className="w-8 h-8 text-purple-400 mb-4" />
-                    <h3 className="font-bold text-white mb-2">Interactive</h3>
-                    <p className="text-sm text-gray-400">Chat with the planner about specific steps to get code snippets and advice.</p>
+                    <Layers className="w-8 h-8 text-purple-400 mb-4" />
+                    <h3 className="font-bold text-white mb-2">Interactive Architect</h3>
+                    <p className="text-sm text-gray-400">Refactor the plan on the fly. Tell the Architect to split steps or add more detail.</p>
                 </div>
             </div>
           </div>
         )}
 
-        {state === AppState.INPUT_GOALS && selectedRepo && (
+        {/* Loading Overlay for Analysis */}
+        {isAnalyzing && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center animate-fade-in">
+                <Loader2 className="w-16 h-16 text-emerald-500 animate-spin mb-6" />
+                <h2 className="text-2xl font-bold text-white mb-2">{loadingStage}</h2>
+                <p className="text-gray-400 text-sm">Powered by Gemini 3.0 Pro</p>
+            </div>
+        )}
+
+        {state === AppState.INPUT_GOALS && selectedRepo && !isAnalyzing && (
           <AnalysisInput
             repo={selectedRepo}
             onAnalyze={handleAnalyze}
@@ -183,9 +207,14 @@ const App: React.FC = () => {
           />
         )}
 
-        {state === AppState.VIEW_PLAN && plan && selectedRepo && (
+        {state === AppState.VIEW_PLAN && plan && selectedRepo && !isAnalyzing && (
           <div className="animate-fade-in">
-             <PlanDisplay plan={plan} repo={selectedRepo} onReset={handleReset} />
+             <PlanDisplay 
+                plan={plan} 
+                repo={selectedRepo} 
+                onReset={handleReset} 
+                onUpdatePlan={handlePlanUpdate}
+             />
           </div>
         )}
 

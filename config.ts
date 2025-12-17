@@ -3,29 +3,35 @@
  * Centralizes environment variable access and validation.
  */
 
-interface AppConfig {
-  apiKey: string;
-  githubApiBase: string;
-}
+const STORAGE_KEY = 'git_architect_api_key';
 
-const getEnvVar = (key: string): string => {
-  // In a real build environment (Vite/Webpack), this would access process.env
-  const value = process.env[key];
-  return value || '';
-};
-
-export const config: AppConfig = {
-  apiKey: getEnvVar('API_KEY'),
-  githubApiBase: 'https://api.github.com',
-};
-
-export const validateConfig = (): { valid: boolean; missing: string[] } => {
-  const missing: string[] = [];
-  if (!config.apiKey) {
-    missing.push('API_KEY');
+export const getApiKey = (): string => {
+  // 1. Check Environment Variable (Build time / Server injected)
+  // Note: verify strictly against undefined/null strings to avoid false positives
+  if (process.env.API_KEY && process.env.API_KEY !== 'undefined') {
+    return process.env.API_KEY;
   }
-  return {
-    valid: missing.length === 0,
-    missing
-  };
+  
+  // 2. Check Local Storage (User entered)
+  return localStorage.getItem(STORAGE_KEY) || '';
+};
+
+export const storeApiKey = (key: string) => {
+  localStorage.setItem(STORAGE_KEY, key);
+};
+
+export const clearApiKey = () => {
+  localStorage.removeItem(STORAGE_KEY);
+};
+
+export const hasValidKey = (): boolean => {
+  return !!getApiKey();
+};
+
+export const config = {
+  // Getter to ensure we always get the latest value
+  get apiKey() {
+    return getApiKey();
+  },
+  githubApiBase: 'https://api.github.com',
 };
