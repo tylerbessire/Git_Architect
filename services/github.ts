@@ -2,6 +2,21 @@ import { Repo } from '../types';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
+export const getRepoDetails = async (fullName: string): Promise<Repo> => {
+  try {
+    const response = await fetch(`${GITHUB_API_BASE}/repos/${fullName}`);
+    
+    if (response.status === 404) throw new Error("Repository not found.");
+    if (response.status === 403) throw new Error("Rate limit exceeded.");
+    if (!response.ok) throw new Error(`Error: ${response.statusText}`);
+
+    return await response.json();
+  } catch (error) {
+    // We re-throw specifically so the caller knows the direct fetch failed
+    throw error;
+  }
+};
+
 export const searchRepos = async (query: string): Promise<Repo[]> => {
   if (!query) return [];
   try {
