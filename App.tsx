@@ -8,7 +8,7 @@ import ApiKeySetup from './components/ApiKeySetup';
 import { Repo, GeneratedPlan } from './types';
 import { getRepoReadme, getRepoStructure } from './services/github';
 import { generatePlan, performDeepResearch } from './services/gemini';
-import { hasValidKey, clearApiKey, getApiKey } from './config';
+import { hasValidConfig, clearSettings } from './config';
 
 enum AppState {
   SETUP_REQUIRED,
@@ -25,9 +25,9 @@ const App: React.FC = () => {
   const [loadingStage, setLoadingStage] = useState<string>('');
   const [showDocs, setShowDocs] = useState(false);
 
-  // Check for API key on mount
+  // Check for valid config (API Key or Local Setup) on mount
   useEffect(() => {
-    if (hasValidKey()) {
+    if (hasValidConfig()) {
       setState(AppState.SEARCH_REPO);
     } else {
       setState(AppState.SETUP_REQUIRED);
@@ -38,9 +38,9 @@ const App: React.FC = () => {
     setState(AppState.SEARCH_REPO);
   };
 
-  const handleClearKey = () => {
-    if (window.confirm("Are you sure you want to remove your API Key?")) {
-      clearApiKey();
+  const handleClearSettings = () => {
+    if (window.confirm("Are you sure you want to reset your AI settings?")) {
+      clearSettings();
       window.location.reload();
     }
   };
@@ -63,7 +63,7 @@ const App: React.FC = () => {
       ]);
 
       // 2. Perform Deep Research
-      setLoadingStage('Performing Deep Research & Safety Analysis...');
+      setLoadingStage('Performing Research & Safety Analysis...');
       const researchNotes = await performDeepResearch(selectedRepo.full_name, goal, problems);
 
       // 3. Generate Plan
@@ -127,9 +127,9 @@ const App: React.FC = () => {
                   <>
                     <div className="w-px h-4 bg-gray-700"></div>
                     <button 
-                      onClick={handleClearKey}
+                      onClick={handleClearSettings}
                       className="hover:text-red-400 transition-colors flex items-center gap-2"
-                      title="Clear API Key"
+                      title="Reset Settings"
                     >
                       <LogOut className="w-4 h-4" />
                     </button>
@@ -139,7 +139,7 @@ const App: React.FC = () => {
                 <div className="w-px h-4 bg-gray-700 hidden sm:block"></div>
                 <div className="hidden sm:flex items-center gap-2">
                     <Github className="w-4 h-4" />
-                    <span>v1.0.0</span>
+                    <span>v1.1.0</span>
                 </div>
             </div>
           </div>
@@ -173,7 +173,7 @@ const App: React.FC = () => {
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
                     <Search className="w-8 h-8 text-indigo-400 mb-4" />
                     <h3 className="font-bold text-white mb-2">Deep Research</h3>
-                    <p className="text-sm text-gray-400">Gemini 3.0 Pro scours the web for the latest best practices and safety warnings for your specific stack.</p>
+                    <p className="text-sm text-gray-400">Gemini 3.0 Pro scours the web for best practices. (Disabled in Local Mode)</p>
                 </div>
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
                     <Code2 className="w-8 h-8 text-emerald-400 mb-4" />
@@ -183,7 +183,7 @@ const App: React.FC = () => {
                 <div className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800">
                     <Layers className="w-8 h-8 text-purple-400 mb-4" />
                     <h3 className="font-bold text-white mb-2">Interactive Architect</h3>
-                    <p className="text-sm text-gray-400">Refactor the plan on the fly. Tell the Architect to split steps or add more detail.</p>
+                    <p className="text-sm text-gray-400">Refactor the plan on the fly. Works with both Cloud and Local LLMs.</p>
                 </div>
             </div>
           </div>
@@ -194,7 +194,7 @@ const App: React.FC = () => {
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center animate-fade-in">
                 <Loader2 className="w-16 h-16 text-emerald-500 animate-spin mb-6" />
                 <h2 className="text-2xl font-bold text-white mb-2">{loadingStage}</h2>
-                <p className="text-gray-400 text-sm">Powered by Gemini 3.0 Pro</p>
+                <p className="text-gray-400 text-sm">Generating intelligent architecture...</p>
             </div>
         )}
 

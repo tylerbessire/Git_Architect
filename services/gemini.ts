@@ -1,22 +1,59 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { GeneratedPlan, Step, ChatMessage } from "../types";
-import { config } from "../config";
+import { config, AiSettings } from "../config";
 
-const getAiClient = () => {
-  const key = config.apiKey;
-  if (!key) {
-    throw new Error("API Key is not configured. Please add your key in the settings.");
+// --- Local LLM Helpers ---
+
+const callLocalLLM = async (
+  settings: AiSettings,
+  messages: { role: string; content: string }[],
+  jsonMode: boolean = false
+): Promise<string> => {
+  if (!settings.baseUrl) throw new Error("Local Base URL not configured");
+
+  try {
+    const response = await fetch(`${settings.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: settings.model || 'llama3',
+        messages: messages,
+        temperature: 0.7,
+        stream: false,
+        // Ollama specific: enforce JSON mode if requested
+        format: jsonMode ? "json" : undefined 
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Local LLM Error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  } catch (error: any) {
+    console.error("Local LLM Fetch Error:", error);
+    throw new Error(`Failed to connect to Local LLM at ${settings.baseUrl}. Is it running?`);
   }
-  return new GoogleGenAI({ apiKey: key });
 };
 
-// Phase 1: Deep Research with Google Search
+// --- Gemini Helpers ---
+
+const getGeminiClient = (apiKey: string) => {
+  return new GoogleGenAI({ apiKey });
+};
+
+// --- Main Exported Functions ---
+
+// Phase 1: Deep Research
 export const performDeepResearch = async (
   repoName: string,
   userGoal: string,
   userProblems: string
 ): Promise<string> => {
-  const ai = getAiClient();
+  const settings = config.settings;
   const prompt = `
     I am planning a modification to the GitHub repository: ${repoName}.
     
@@ -31,56 +68,56 @@ export const performDeepResearch = async (
     Provide a concise, bulleted summary of your findings to guide a developer plan. Avoid broad generalizations; focus on technical specifics.
   `;
 
+  // Branch based on provider
+  if (settings.provider === 'local') {
+    // Local models usually don't have internet access enabled by default in this setup
+    console.warn("Deep research skipped: Local mode active.");
+    return "NOTE: Deep Internet Research is disabled in Local LLM mode. Using model's internal knowledge base only.";
+  }
+
+  // Gemini Path
   try {
+    const ai = getGeminiClient(settings.apiKey!);
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', // Using Pro for complex reasoning
+      model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        tools: [{ googleSearch: {} }], // Enable internet access
+        tools: [{ googleSearch: {} }],
       }
     });
-
-    // Extract text from response (handling potential grounding chunks implicitly via text generation)
     return response.text || "Research completed but no summary generated.";
   } catch (error) {
-    console.warn("Research phase failed, proceeding without external research:", error);
+    console.warn("Research phase failed:", error);
     return "Internet research unavailable. Proceeding with internal knowledge.";
   }
 };
 
-// Shared Schema for Plan Generation
-const PLAN_SCHEMA = {
-  type: Type.OBJECT,
+// Shared Schema used for structure prompting
+const PLAN_SCHEMA_JSON = JSON.stringify({
+  type: "object",
   properties: {
-    title: { type: Type.STRING, description: "Title of the implementation plan" },
-    summary: { type: Type.STRING, description: "High level executive summary" },
+    title: { type: "string" },
+    summary: { type: "string" },
     steps: {
-      type: Type.ARRAY,
+      type: "array",
       items: {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
-          id: { type: Type.INTEGER },
-          title: { type: Type.STRING },
-          description: { type: Type.STRING },
-          rationale: { type: Type.STRING },
-          technicalDetails: { type: Type.STRING },
-          affectedFiles: { 
-            type: Type.ARRAY, 
-            items: { type: Type.STRING }
-          },
-          complexity: { type: Type.STRING, enum: ["Low", "Medium", "High"] },
-          safetyChecks: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "List of specific checks to ensure this step doesn't break the app (e.g. backward compat, tests)"
-          }
+          id: { type: "integer" },
+          title: { type: "string" },
+          description: { type: "string" },
+          rationale: { type: "string" },
+          technicalDetails: { type: "string" },
+          affectedFiles: { type: "array", items: { type: "string" } },
+          complexity: { type: "string", enum: ["Low", "Medium", "High"] },
+          safetyChecks: { type: "array", items: { type: "string" } }
         },
         required: ["id", "title", "description", "rationale", "technicalDetails", "affectedFiles", "complexity", "safetyChecks"]
       }
     }
   },
   required: ["title", "summary", "steps"]
-};
+});
 
 // Phase 2: Generate Structured Plan
 export const generatePlan = async (
@@ -89,7 +126,9 @@ export const generatePlan = async (
   userProblems: string,
   researchNotes: string
 ): Promise<GeneratedPlan> => {
-  const ai = getAiClient();
+  const settings = config.settings;
+
+  const systemInstruction = "You are a pragmatic Senior Software Architect. You hate fluff. You prioritize working code, correct file paths, and safety. You generate plans that look like engineering specs, not blog posts.";
   
   const prompt = `
     CONTEXT:
@@ -120,41 +159,58 @@ export const generatePlan = async (
     3. Ensure no step leaves the application in a broken state.
     4. Explicitly list safety checks for every step.
 
-    Return valid JSON.
+    OUTPUT FORMAT:
+    Return VALID JSON matching this schema:
+    ${PLAN_SCHEMA_JSON}
   `;
 
-  try {
+  let text = "";
+
+  if (settings.provider === 'local') {
+    // Local Path
+    text = await callLocalLLM(settings, [
+      { role: "system", content: systemInstruction + " Respond ONLY with raw JSON." },
+      { role: "user", content: prompt }
+    ], true);
+  } else {
+    // Gemini Path
+    const ai = getGeminiClient(settings.apiKey!);
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        systemInstruction: "You are a pragmatic Senior Software Architect. You hate fluff. You prioritize working code, correct file paths, and safety. You generate plans that look like engineering specs, not blog posts.",
+        systemInstruction,
         responseMimeType: 'application/json',
-        responseSchema: PLAN_SCHEMA
+        // We use loose schema enforcement in prompt for broader compatibility, 
+        // but could use responseSchema object here for Gemini.
+        // For simplicity with the dual-path code, we rely on the prompt+schema string 
+        // but explicitly telling Gemini it's JSON mimeType ensures valid parsing.
       }
     });
+    text = response.text || "";
+  }
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-    
-    const plan = JSON.parse(text) as GeneratedPlan;
-    // Attach research notes to the plan object for display
+  try {
+    // Clean markdown code blocks if present (common in Local LLM outputs)
+    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const plan = JSON.parse(jsonStr) as GeneratedPlan;
     plan.researchNotes = researchNotes;
     return plan;
-
   } catch (error) {
-    console.error("Gemini Plan Generation Error:", error);
-    throw error;
+    console.error("JSON Parse Error:", error);
+    console.error("Raw Text:", text);
+    throw new Error("AI generated an invalid plan format. Please try again.");
   }
 };
 
-// Phase 3: Iterative Refactoring (Chat to Edit Plan)
+// Phase 3: Iterative Refactoring
 export const refactorPlan = async (
   currentPlan: GeneratedPlan,
   userFeedback: string,
   repoContext: { name: string; structure: string }
 ): Promise<GeneratedPlan> => {
-  const ai = getAiClient();
+  const settings = config.settings;
+  const systemInstruction = "You are an intelligent code planner assistant. You modify existing architectural plans based on user feedback while maintaining strict JSON structure and preventing hallucinations of file paths.";
 
   const prompt = `
     CURRENT PLAN:
@@ -175,29 +231,36 @@ export const refactorPlan = async (
     - Only change what is necessary.
     - Maintain strict file path verification against the Context Structure.
     - Keep descriptions concise and actionable.
+    
+    OUTPUT: Valid JSON only.
   `;
 
-  try {
+  let text = "";
+  if (settings.provider === 'local') {
+    text = await callLocalLLM(settings, [
+      { role: "system", content: systemInstruction },
+      { role: "user", content: prompt }
+    ], true);
+  } else {
+    const ai = getGeminiClient(settings.apiKey!);
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        systemInstruction: "You are an intelligent code planner assistant. You modify existing architectural plans based on user feedback while maintaining strict JSON structure and preventing hallucinations of file paths.",
+        systemInstruction,
         responseMimeType: 'application/json',
-        responseSchema: PLAN_SCHEMA
       }
     });
+    text = response.text || "";
+  }
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-    
-    const newPlan = JSON.parse(text) as GeneratedPlan;
-    // Preserve research notes if lost
+  try {
+    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const newPlan = JSON.parse(jsonStr) as GeneratedPlan;
     if (!newPlan.researchNotes) newPlan.researchNotes = currentPlan.researchNotes;
-    
     return newPlan;
   } catch (error) {
-    console.error("Plan Refactoring Error:", error);
+    console.error("Refactor Parse Error:", error);
     throw error;
   }
 };
@@ -207,7 +270,8 @@ export const askStepQuestion = async (
   chatHistory: ChatMessage[],
   repoName: string
 ): Promise<string> => {
-  const ai = getAiClient();
+  const settings = config.settings;
+  const systemInstruction = `You are a helpful coding assistant for repo '${repoName}'. Provide code snippets and safety warnings. Be concise.`;
   
   const historyText = chatHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
   const lastMsg = chatHistory[chatHistory.length - 1].content;
@@ -225,17 +289,23 @@ export const askStepQuestion = async (
     ${lastMsg}
   `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', // Upgrade to Pro for better chat responses
-      contents: prompt,
-      config: {
-        systemInstruction: `You are a helpful coding assistant for repo '${repoName}'. Provide code snippets and safety warnings. Be concise.`
-      }
-    });
-    return response.text || "I couldn't generate an answer.";
-  } catch (error) {
-    console.error("Gemini Chat Error:", error);
-    return "Sorry, I encountered an error answering that.";
+  if (settings.provider === 'local') {
+     return await callLocalLLM(settings, [
+        { role: "system", content: systemInstruction },
+        ...chatHistory.map(m => ({ role: m.role, content: m.content }))
+     ]);
+  } else {
+     try {
+        const ai = getGeminiClient(settings.apiKey!);
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-pro-preview',
+          contents: prompt,
+          config: { systemInstruction }
+        });
+        return response.text || "No response.";
+     } catch (error: any) {
+        console.error(error);
+        return "Error calling Gemini.";
+     }
   }
 };
