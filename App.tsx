@@ -6,8 +6,8 @@ import PlanDisplay from './components/PlanDisplay';
 import DocsModal from './components/DocsModal';
 import ApiKeySetup from './components/ApiKeySetup';
 import { Repo, GeneratedPlan } from './types';
-import { getRepoReadme, getRepoStructure } from './services/github';
-import { generatePlan, performDeepResearch } from './services/gemini';
+import { getRepoReadme, getRepoStructure, getRepoTree } from './services/github';
+import { generatePlan, generatePlanEnhanced, performDeepResearch } from './services/gemini';
 import { hasValidConfig, clearSettings } from './config';
 
 enum AppState {
@@ -53,30 +53,57 @@ const App: React.FC = () => {
   const handleAnalyze = async (goal: string, problems: string) => {
     if (!selectedRepo) return;
     setIsAnalyzing(true);
-    
+
     try {
-      // 1. Fetch context
-      setLoadingStage('Scanning Repository...');
-      const [readme, structure] = await Promise.all([
-        getRepoReadme(selectedRepo.full_name, selectedRepo.default_branch),
-        getRepoStructure(selectedRepo.full_name)
-      ]);
+      // Use enhanced two-stage analysis with security scanning
+      const USE_ENHANCED_ANALYSIS = true;
 
-      // 2. Perform Deep Research
-      setLoadingStage('Performing Research & Safety Analysis...');
-      const researchNotes = await performDeepResearch(selectedRepo.full_name, goal, problems);
+      if (USE_ENHANCED_ANALYSIS) {
+        // Enhanced workflow with full tree analysis and security
 
-      // 3. Generate Plan
-      setLoadingStage('Architecting Solution...');
-      const generatedPlan = await generatePlan(
-        { name: selectedRepo.full_name, readme, structure },
-        goal,
-        problems,
-        researchNotes
-      );
+        // 1. Fetch repository tree
+        setLoadingStage('Scanning Repository Structure...');
+        const repoTree = await getRepoTree(selectedRepo.full_name, selectedRepo.default_branch);
 
-      setPlan(generatedPlan);
-      setState(AppState.VIEW_PLAN);
+        // 2. Perform Deep Research
+        setLoadingStage('Performing Research & Safety Analysis...');
+        const researchNotes = await performDeepResearch(selectedRepo.full_name, goal, problems);
+
+        // 3. Generate Plan with Two-Stage Analysis
+        setLoadingStage('Analyzing Codebase & Planning...');
+        const generatedPlan = await generatePlanEnhanced(
+          selectedRepo.full_name,
+          repoTree.tree,
+          goal,
+          problems,
+          researchNotes,
+          selectedRepo.default_branch
+        );
+
+        setPlan(generatedPlan);
+        setState(AppState.VIEW_PLAN);
+      } else {
+        // Legacy workflow (kept for fallback)
+        setLoadingStage('Scanning Repository...');
+        const [readme, structure] = await Promise.all([
+          getRepoReadme(selectedRepo.full_name, selectedRepo.default_branch),
+          getRepoStructure(selectedRepo.full_name)
+        ]);
+
+        setLoadingStage('Performing Research & Safety Analysis...');
+        const researchNotes = await performDeepResearch(selectedRepo.full_name, goal, problems);
+
+        setLoadingStage('Architecting Solution...');
+        const generatedPlan = await generatePlan(
+          { name: selectedRepo.full_name, readme, structure },
+          goal,
+          problems,
+          researchNotes
+        );
+
+        setPlan(generatedPlan);
+        setState(AppState.VIEW_PLAN);
+      }
     } catch (error: any) {
       console.error(error);
       alert(`Failed to generate plan: ${error.message}`);

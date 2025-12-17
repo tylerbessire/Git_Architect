@@ -39,3 +39,25 @@ export interface ChatMessage {
 }
 
 export type StepChatHistory = Record<number, ChatMessage[]>;
+
+// New types for enhanced repository analysis
+export interface RepoFile {
+  path: string;
+  type: 'blob' | 'tree';
+  size?: number;
+  sha: string;
+  url: string;
+}
+
+export interface RepoTreeResponse {
+  sha: string;
+  url: string;
+  tree: RepoFile[];
+  truncated: boolean;
+}
+
+export interface AnalysisContext {
+  treeStructure: string;
+  relevantFiles: string[];
+  fileContents: Map<string, string>;
+}

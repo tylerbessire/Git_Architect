@@ -1,6 +1,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { GeneratedPlan, Step, ChatMessage } from "../types";
+import { GeneratedPlan, Step, ChatMessage, RepoFile } from "../types";
 import { config, AiSettings } from "../config";
+import { generateTreeString, filterImportantFiles, estimateTreeTokens } from "./treeUtils";
+import { sanitizeForAI } from "./security";
+import { getFileContent } from "./github";
 
 // --- Local LLM Helpers ---
 
@@ -92,6 +95,143 @@ export const performDeepResearch = async (
   }
 };
 
+// --- Two-Stage Analysis Functions ---
+
+/**
+ * Stage 1: Identify relevant files based on user goal and repository tree
+ * This prevents sending all files to the AI, saving tokens and reducing costs
+ */
+export const identifyRelevantFiles = async (
+  userGoal: string,
+  userProblems: string,
+  repoTree: RepoFile[],
+  repoName: string
+): Promise<string[]> => {
+  const settings = config.settings;
+
+  // Filter to important files first
+  const importantFiles = filterImportantFiles(repoTree);
+  const treeString = generateTreeString(importantFiles);
+
+  const systemInstruction = "You are a code analysis assistant. Your job is to identify which files in a repository are most relevant to a user's goal. Be selective - choose only files that are directly relevant.";
+
+  const prompt = `
+    REPOSITORY: ${repoName}
+
+    FILE STRUCTURE:
+    ${treeString}
+
+    USER'S GOAL:
+    ${userGoal}
+
+    USER'S PROBLEMS/CONTEXT:
+    ${userProblems}
+
+    TASK:
+    Analyze the file structure and identify which files are most relevant to achieve the user's goal.
+    Consider:
+    1. Main source files that would need modification
+    2. Configuration files that might be affected
+    3. Test files if testing is relevant
+    4. Documentation files if they provide necessary context
+
+    CONSTRAINTS:
+    - Select a MAXIMUM of 10 files (prefer fewer if possible)
+    - Only choose files that actually exist in the tree above
+    - Prioritize source code over configuration
+    - Avoid binary files, images, or generated files
+
+    OUTPUT FORMAT:
+    Return a JSON array of file paths only, nothing else.
+    Example: ["src/main.ts", "package.json", "README.md"]
+  `;
+
+  let text = "";
+
+  if (settings.provider === 'local') {
+    text = await callLocalLLM(settings, [
+      { role: "system", content: systemInstruction },
+      { role: "user", content: prompt }
+    ], true);
+  } else {
+    const ai = getGeminiClient(settings.apiKey!);
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+      }
+    });
+    text = response.text || "[]";
+  }
+
+  try {
+    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const files = JSON.parse(jsonStr) as string[];
+
+    // Validate that files exist in the tree
+    const validFiles = files.filter(filePath =>
+      repoTree.some(f => f.path === filePath)
+    );
+
+    console.log(`Stage 1: Identified ${validFiles.length} relevant files:`, validFiles);
+    return validFiles.slice(0, 10); // Hard limit to 10 files
+  } catch (error) {
+    console.error("Failed to parse relevant files:", error);
+    console.error("Raw response:", text);
+    // Fallback: return important config files
+    return repoTree
+      .filter(f =>
+        f.path === 'package.json' ||
+        f.path === 'README.md' ||
+        f.path.startsWith('src/')
+      )
+      .slice(0, 5)
+      .map(f => f.path);
+  }
+};
+
+/**
+ * Stage 2: Fetch and sanitize file contents
+ * Applies security redaction before sending to AI
+ */
+export const fetchAndSanitizeFiles = async (
+  filePaths: string[],
+  repoName: string,
+  branch: string
+): Promise<{ path: string; content: string; warnings: string[] }[]> => {
+  const results = await Promise.all(
+    filePaths.map(async (path) => {
+      try {
+        const rawContent = await getFileContent(repoName, path, branch);
+        const { content, warnings } = sanitizeForAI(rawContent, path);
+
+        return {
+          path,
+          content,
+          warnings
+        };
+      } catch (error: any) {
+        console.error(`Failed to fetch file ${path}:`, error);
+        return {
+          path,
+          content: `[Error: Could not fetch file - ${error.message}]`,
+          warnings: []
+        };
+      }
+    })
+  );
+
+  // Log security warnings
+  const allWarnings = results.flatMap(r => r.warnings);
+  if (allWarnings.length > 0) {
+    console.warn('SECURITY: Redacted secrets before sending to AI:', allWarnings);
+  }
+
+  return results;
+};
+
 // Shared Schema used for structure prompting
 const PLAN_SCHEMA_JSON = JSON.stringify({
   type: "object",
@@ -119,7 +259,114 @@ const PLAN_SCHEMA_JSON = JSON.stringify({
   required: ["title", "summary", "steps"]
 });
 
-// Phase 2: Generate Structured Plan
+/**
+ * Enhanced Plan Generation with Two-Stage Analysis
+ * This version uses the tree-first approach with targeted file reading
+ */
+export const generatePlanEnhanced = async (
+  repoName: string,
+  repoTree: RepoFile[],
+  userGoal: string,
+  userProblems: string,
+  researchNotes: string,
+  branch: string = 'main'
+): Promise<GeneratedPlan> => {
+  const settings = config.settings;
+
+  // Stage 1: Identify relevant files
+  const relevantFilePaths = await identifyRelevantFiles(
+    userGoal,
+    userProblems,
+    repoTree,
+    repoName
+  );
+
+  // Stage 2: Fetch and sanitize file contents
+  const fileContents = await fetchAndSanitizeFiles(
+    relevantFilePaths,
+    repoName,
+    branch
+  );
+
+  // Build context from tree and file contents
+  const treeString = generateTreeString(repoTree);
+  const fileContexts = fileContents
+    .map(f => `\n--- FILE: ${f.path} ---\n${f.content.substring(0, 5000)}`)
+    .join('\n');
+
+  const systemInstruction = "You are a pragmatic Senior Software Architect. You hate fluff. You prioritize working code, correct file paths, and safety. You generate plans that look like engineering specs, not blog posts. All file paths you mention MUST exist in the provided repository structure.";
+
+  const prompt = `
+    REPOSITORY: ${repoName}
+
+    REPOSITORY STRUCTURE:
+    ${treeString.substring(0, 10000)}
+
+    ANALYZED FILES:
+    ${fileContexts}
+
+    USER GOAL: ${userGoal}
+    PAIN POINTS: ${userProblems}
+
+    RESEARCH FINDINGS & SAFETY CONTEXT:
+    ${researchNotes}
+
+    TASK:
+    Create a detailed, step-by-step developer implementation plan.
+
+    STRICT GUIDELINES:
+    1. **Conciseness**: Avoid long narrative or dense explanations. Use bullet points and imperative verbs.
+    2. **Structure**: Organize steps into clear logical phases (e.g., "Phase 1: Setup", "Phase 2: Core Logic").
+    3. **File Path Verification**: You MUST cross-reference the provided 'Repository Structure'.
+       - If you reference a file, it MUST exist in the structure list.
+       - If you are creating a new file, explicitly state "Create [filename]".
+       - Do NOT hallucinate libraries or routes that are not implied by the analyzed files.
+
+    CRITICAL SAFETY RULES:
+    1. Prioritize backward compatibility.
+    2. Suggest rollback strategies where applicable.
+    3. Ensure no step leaves the application in a broken state.
+    4. Explicitly list safety checks for every step.
+    5. NEVER suggest including secrets or API keys in code.
+
+    OUTPUT FORMAT:
+    Return VALID JSON matching this schema:
+    ${PLAN_SCHEMA_JSON}
+  `;
+
+  let text = "";
+
+  if (settings.provider === 'local') {
+    text = await callLocalLLM(settings, [
+      { role: "system", content: systemInstruction + " Respond ONLY with raw JSON." },
+      { role: "user", content: prompt }
+    ], true);
+  } else {
+    const ai = getGeminiClient(settings.apiKey!);
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+      }
+    });
+    text = response.text || "";
+  }
+
+  try {
+    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const plan = JSON.parse(jsonStr) as GeneratedPlan;
+    plan.researchNotes = researchNotes;
+    return plan;
+  } catch (error) {
+    console.error("JSON Parse Error:", error);
+    console.error("Raw Text:", text);
+    throw new Error("AI generated an invalid plan format. Please try again.");
+  }
+};
+
+// Phase 2: Generate Structured Plan (Legacy - kept for backwards compatibility)
 export const generatePlan = async (
   repoContext: { name: string; readme: string; structure: string },
   userGoal: string,
