@@ -28,7 +28,7 @@ export const performDeepResearch = async (
     2. Common pitfalls, breaking changes, or deprecations I should be aware of.
     3. Safety considerations for this type of refactor/feature.
 
-    Provide a concise summary of your findings to guide a developer plan.
+    Provide a concise, bulleted summary of your findings to guide a developer plan. Avoid broad generalizations; focus on technical specifics.
   `;
 
   try {
@@ -106,6 +106,14 @@ export const generatePlan = async (
     TASK:
     Create a detailed, step-by-step developer implementation plan.
     
+    STRICT GUIDELINES:
+    1. **Conciseness**: Avoid long narrative or dense explanations. Use bullet points and imperative verbs.
+    2. **Structure**: Organize steps into clear logical phases (e.g., "Phase 1: Setup", "Phase 2: Core Logic"). Use the Step Title to indicate the phase.
+    3. **File Path Verification**: You MUST cross-reference the provided 'File Structure'. 
+       - If you reference a file, it MUST exist in the structure list.
+       - If you are creating a new file, explicitly state "Create [filename]".
+       - Do NOT hallucinate libraries or routes that are not implied by the package.json or file structure.
+    
     CRITICAL SAFETY RULES:
     1. Prioritize backward compatibility.
     2. Suggest rollback strategies where applicable.
@@ -120,7 +128,7 @@ export const generatePlan = async (
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        systemInstruction: "You are a cautious, expert Senior Software Architect. You prioritize system stability and safety above speed.",
+        systemInstruction: "You are a pragmatic Senior Software Architect. You hate fluff. You prioritize working code, correct file paths, and safety. You generate plans that look like engineering specs, not blog posts.",
         responseMimeType: 'application/json',
         responseSchema: PLAN_SCHEMA
       }
@@ -165,6 +173,8 @@ export const refactorPlan = async (
     - If they ask for more safety, add detailed safetyChecks.
     - Keep the JSON structure valid.
     - Only change what is necessary.
+    - Maintain strict file path verification against the Context Structure.
+    - Keep descriptions concise and actionable.
   `;
 
   try {
@@ -172,7 +182,7 @@ export const refactorPlan = async (
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
-        systemInstruction: "You are an intelligent code planner assistant. You modify existing architectural plans based on user feedback while maintaining strict JSON structure.",
+        systemInstruction: "You are an intelligent code planner assistant. You modify existing architectural plans based on user feedback while maintaining strict JSON structure and preventing hallucinations of file paths.",
         responseMimeType: 'application/json',
         responseSchema: PLAN_SCHEMA
       }
@@ -220,7 +230,7 @@ export const askStepQuestion = async (
       model: 'gemini-3-pro-preview', // Upgrade to Pro for better chat responses
       contents: prompt,
       config: {
-        systemInstruction: `You are a helpful coding assistant for repo '${repoName}'. Provide code snippets and safety warnings.`
+        systemInstruction: `You are a helpful coding assistant for repo '${repoName}'. Provide code snippets and safety warnings. Be concise.`
       }
     });
     return response.text || "I couldn't generate an answer.";
